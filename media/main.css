@@ -37,6 +37,108 @@ body {
   margin-bottom: 10px;
 }
 
+.combined-panel {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 8px;
+  padding: 8px;
+  margin-bottom: 10px;
+  display: grid;
+  gap: 8px;
+  background: color-mix(in srgb, var(--vscode-editor-background) 87%, white 4%);
+}
+
+.combined-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.combined-enable {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.combined-count {
+  margin-left: auto;
+  font-size: 12px;
+  opacity: 0.8;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.combined-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mode-small {
+  border: 1px solid var(--vscode-dropdown-border);
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.mode-tag {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.gap-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.gap-input {
+  width: 54px;
+  border: 1px solid var(--vscode-input-border);
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.combined-results {
+  display: grid;
+  gap: 6px;
+}
+
+.combined-item {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  padding: 5px 6px;
+}
+
+.combined-pos {
+  font-size: 11px;
+  opacity: 0.75;
+  margin-bottom: 2px;
+}
+
+.combined-preview {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.combined-empty {
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.hidden {
+  display: none !important;
+}
+
 button {
   border: 1px solid var(--vscode-button-border, transparent);
   background: var(--vscode-button-background);
@@ -183,4 +285,26 @@ button:hover {
 .history-empty {
   font-size: 11px;
   opacity: 0.6;
+}
+
+.debug-panel {
+  margin-top: 12px;
+  border-top: 1px dashed var(--vscode-panel-border);
+  padding-top: 8px;
+  font-size: 11px;
+  opacity: 0.9;
+  display: grid;
+  gap: 4px;
+}
+
+.debug-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.debug-row code {
+  padding: 1px 4px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  margin-right: 4px;
 }

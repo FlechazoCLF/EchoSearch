@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 
 type SearchMode = "plain" | "regex";
 type NavDirection = "next" | "prev";
+type CombineMode = "ordered" | "unordered" | "adjacent";
 
 interface SearchEntry {
   id: string;
@@ -25,11 +26,38 @@ interface HistoryEntry {
   pinned: boolean;
 }
 
+interface CombinedConfig {
+  enabled: boolean;
+  mode: CombineMode;
+  maxGap: number;
+  collapsed: boolean;
+}
+
+interface CombinedResultItem {
+  startLine: number;
+  startCol: number;
+  endLine: number;
+  endCol: number;
+  preview: string;
+}
+
+interface CombinedDebugView {
+  tokens: string[];
+  reason: string;
+}
+
+interface CombinedStateView extends CombinedConfig {
+  count: number;
+  results: CombinedResultItem[];
+  debug: CombinedDebugView;
+}
+
 interface WebviewStatePayload {
   entries: SearchEntryView[];
   history: HistoryEntry[];
   canAdd: boolean;
   maxEntries: number;
+  combined: CombinedStateView;
 }
 
 interface WebviewUpdateMessage {
@@ -76,25 +104,68 @@ interface WebviewTogglePinHistoryMessage {
   };
 }
 
+interface WebviewUpdateCombinedConfigMessage {
+  type: "updateCombinedConfig";
+  payload: Partial<CombinedConfig>;
+}
+
+interface WebviewNavigateCombinedMessage {
+  type: "navigateCombined";
+  payload: {
+    direction: NavDirection;
+  };
+}
+
 type IncomingMessage =
   | WebviewStateMessage
   | WebviewRefreshMessage
   | WebviewNavigateMessage
   | WebviewApplyHistoryMessage
   | WebviewDeleteHistoryMessage
-  | WebviewTogglePinHistoryMessage;
+  | WebviewTogglePinHistoryMessage
+  | WebviewUpdateCombinedConfigMessage
+  | WebviewNavigateCombinedMessage;
+
+interface TokenMatch {
+  start: number;
+  end: number;
+}
+
+interface CombinedRunResult {
+  ranges: vscode.Range[];
+  list: CombinedResultItem[];
+  tokens: string[];
+  reason: string;
+}
 
 class EchoSearchController {
   private readonly maxEntries = 10;
   private readonly maxHistory = 80;
+  private readonly maxCombinedList = 100;
+  private readonly combinedDecoration: vscode.TextEditorDecorationType;
   private entries: SearchEntry[];
   private history: HistoryEntry[] = [];
+  private combinedConfig: CombinedConfig = {
+    enabled: false,
+    mode: "ordered",
+    maxGap: 3,
+    collapsed: true
+  };
   private decorationById = new Map<string, vscode.TextEditorDecorationType>();
   private view: vscode.WebviewView | undefined;
   private historyFilePath: string | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.entries = this.createDefaultEntries();
+    this.combinedDecoration = vscode.window.createTextEditorDecorationType({
+      backgroundColor: "rgba(255, 103, 103, 0.22)",
+      border: "1px solid rgba(255, 103, 103, 0.85)",
+      borderRadius: "3px",
+      overviewRulerColor: "rgba(255, 103, 103, 0.95)",
+      overviewRulerLane: vscode.OverviewRulerLane.Right
+    });
+
+    this.context.subscriptions.push(this.combinedDecoration);
 
     this.context.subscriptions.push(
       vscode.window.onDidChangeActiveTextEditor(() => {
@@ -149,6 +220,10 @@ class EchoSearchController {
         this.deleteHistory(msg.payload.query);
       } else if (msg.type === "togglePinHistory") {
         this.togglePinHistory(msg.payload.query);
+      } else if (msg.type === "updateCombinedConfig") {
+        this.updateCombinedConfig(msg.payload);
+      } else if (msg.type === "navigateCombined") {
+        this.navigateCombined(msg.payload.direction);
       }
     });
   }
@@ -170,6 +245,19 @@ class EchoSearchController {
     target.query = query;
     target.enabled = query.trim().length > 0;
     this.captureHistory(query);
+    this.refreshDecorationsForVisibleEditors();
+  }
+
+  private updateCombinedConfig(patch: Partial<CombinedConfig>): void {
+    const next: CombinedConfig = {
+      ...this.combinedConfig,
+      ...patch
+    };
+    next.mode = this.normalizeCombineMode(next.mode);
+    next.maxGap = Number.isFinite(next.maxGap) ? Math.max(0, Math.min(200, Math.floor(next.maxGap))) : 3;
+    next.enabled = Boolean(next.enabled);
+    next.collapsed = Boolean(next.collapsed);
+    this.combinedConfig = next;
     this.refreshDecorationsForVisibleEditors();
   }
 
@@ -241,6 +329,8 @@ class EchoSearchController {
       const ranges = this.collectRanges(text, editor.document, entry);
       editor.setDecorations(decoration, ranges);
     }
+    const combined = this.runCombined(text, editor.document);
+    editor.setDecorations(this.combinedDecoration, combined.ranges);
   }
 
   private collectRanges(
@@ -288,7 +378,29 @@ class EchoSearchController {
     if (ranges.length === 0) {
       return;
     }
+    this.navigateByRanges(editor, ranges, direction);
+    this.captureHistory(entry.query);
+    this.postState();
+  }
 
+  private navigateCombined(direction: NavDirection): void {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      return;
+    }
+    const combined = this.runCombined(editor.document.getText(), editor.document);
+    if (combined.ranges.length === 0) {
+      return;
+    }
+    this.navigateByRanges(editor, combined.ranges, direction);
+    this.postState();
+  }
+
+  private navigateByRanges(
+    editor: vscode.TextEditor,
+    ranges: vscode.Range[],
+    direction: NavDirection
+  ): void {
     const selectionStart = editor.document.offsetAt(editor.selection.start);
     const selectionEnd = editor.document.offsetAt(editor.selection.end);
     const starts = ranges.map((range) => editor.document.offsetAt(range.start));
@@ -317,8 +429,212 @@ class EchoSearchController {
     const target = ranges[targetIndex];
     editor.selection = new vscode.Selection(target.start, target.end);
     editor.revealRange(target, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-    this.captureHistory(entry.query);
-    this.postState();
+  }
+
+  private runCombined(text: string, document: vscode.TextDocument): CombinedRunResult {
+    if (!this.combinedConfig.enabled) {
+      return {
+        ranges: [],
+        list: [],
+        tokens: [],
+        reason: "Combined search is disabled."
+      };
+    }
+    const tokens = this.extractCombinedTokens();
+    if (tokens.length < 2) {
+      return {
+        ranges: [],
+        list: [],
+        tokens: tokens.map((item) => item.query.trim()),
+        reason: "Need at least 2 enabled search boxes with non-empty queries."
+      };
+    }
+
+    const rawWindows = this.combinedConfig.mode === "unordered"
+      ? this.findUnorderedWindows(text, tokens)
+      : this.findOrderedWindows(
+          text,
+          tokens,
+          this.combinedConfig.mode === "adjacent" ? this.combinedConfig.maxGap : undefined
+        );
+
+    const merged = this.mergeTokenWindows(rawWindows);
+    const ranges = merged.map(
+      (item) =>
+        new vscode.Range(
+          document.positionAt(item.start),
+          document.positionAt(item.end)
+        )
+    );
+
+    const list: CombinedResultItem[] = merged.slice(0, this.maxCombinedList).map((item) => {
+      const startPos = document.positionAt(item.start);
+      const endPos = document.positionAt(item.end);
+      return {
+        startLine: startPos.line + 1,
+        startCol: startPos.character + 1,
+        endLine: endPos.line + 1,
+        endCol: endPos.character + 1,
+        preview: this.previewText(text, item.start, item.end)
+      };
+    });
+
+    return {
+      ranges,
+      list,
+      tokens: tokens.map((item) => item.query.trim()),
+      reason:
+        ranges.length > 0
+          ? `Matched ${ranges.length} combined result(s).`
+          : `No match with mode=${this.combinedConfig.mode}${
+              this.combinedConfig.mode === "adjacent" ? ` gap=${this.combinedConfig.maxGap}` : ""
+            }.`
+    };
+  }
+
+  private extractCombinedTokens(): SearchEntry[] {
+    return this.entries.filter((entry) => entry.enabled && entry.query.trim().length > 0);
+  }
+
+  private findOrderedWindows(
+    text: string,
+    tokens: SearchEntry[],
+    maxGap?: number
+  ): TokenMatch[] {
+    const perTokenMatches = tokens.map((token) => this.collectTokenMatches(text, token));
+    if (perTokenMatches.some((list) => list.length === 0)) {
+      return [];
+    }
+
+    const results: TokenMatch[] = [];
+    const first = perTokenMatches[0];
+    for (const seed of first) {
+      let current = seed;
+      let failed = false;
+      for (let i = 1; i < perTokenMatches.length; i += 1) {
+        const candidates = perTokenMatches[i];
+        const next = candidates.find((candidate) => {
+          if (candidate.start < current.end) {
+            return false;
+          }
+          if (typeof maxGap === "number") {
+            const gap = candidate.start - current.end;
+            return gap <= maxGap;
+          }
+          return true;
+        });
+        if (!next) {
+          failed = true;
+          break;
+        }
+        current = next;
+      }
+      if (!failed) {
+        results.push({ start: seed.start, end: current.end });
+      }
+    }
+    return results;
+  }
+
+  private findUnorderedWindows(text: string, tokens: SearchEntry[]): TokenMatch[] {
+    const events: Array<{ tokenIndex: number; start: number; end: number }> = [];
+    tokens.forEach((token, tokenIndex) => {
+      const tokenMatches = this.collectTokenMatches(text, token);
+      tokenMatches.forEach((match) => {
+        events.push({
+          tokenIndex,
+          start: match.start,
+          end: match.end
+        });
+      });
+    });
+    if (events.length === 0) {
+      return [];
+    }
+
+    events.sort((a, b) => a.start - b.start || a.end - b.end);
+    const needKinds = tokens.length;
+    const countByKind = new Map<number, number>();
+    let haveKinds = 0;
+    let left = 0;
+    const windows: TokenMatch[] = [];
+
+    for (let right = 0; right < events.length; right += 1) {
+      const addKind = events[right].tokenIndex;
+      const prev = countByKind.get(addKind) ?? 0;
+      countByKind.set(addKind, prev + 1);
+      if (prev === 0) {
+        haveKinds += 1;
+      }
+
+      while (haveKinds === needKinds && left <= right) {
+        const first = events[left];
+        const last = events[right];
+        windows.push({
+          start: first.start,
+          end: last.end
+        });
+
+        const removeKind = first.tokenIndex;
+        const removePrev = countByKind.get(removeKind) ?? 0;
+        if (removePrev <= 1) {
+          countByKind.delete(removeKind);
+          haveKinds -= 1;
+        } else {
+          countByKind.set(removeKind, removePrev - 1);
+        }
+        left += 1;
+      }
+    }
+    return windows;
+  }
+
+  private collectTokenMatches(text: string, token: SearchEntry): TokenMatch[] {
+    let regex: RegExp;
+    try {
+      regex = this.buildRegExp(token);
+    } catch {
+      return [];
+    }
+    const matches: TokenMatch[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      const full = match[0];
+      if (full.length === 0) {
+        regex.lastIndex += 1;
+        continue;
+      }
+      matches.push({
+        start: match.index,
+        end: match.index + full.length
+      });
+    }
+    return matches;
+  }
+
+  private mergeTokenWindows(items: TokenMatch[]): TokenMatch[] {
+    if (items.length === 0) {
+      return [];
+    }
+    const sorted = [...items].sort((a, b) => a.start - b.start || a.end - b.end);
+    const merged: TokenMatch[] = [sorted[0]];
+    for (let i = 1; i < sorted.length; i += 1) {
+      const current = sorted[i];
+      const last = merged[merged.length - 1];
+      if (current.start <= last.end) {
+        last.end = Math.max(last.end, current.end);
+      } else {
+        merged.push({ ...current });
+      }
+    }
+    return merged;
+  }
+
+  private previewText(text: string, start: number, end: number): string {
+    const left = Math.max(0, start - 18);
+    const right = Math.min(text.length, end + 36);
+    const raw = text.slice(left, right).replace(/\r?\n/g, " ");
+    return raw.length > 120 ? `${raw.slice(0, 117)}...` : raw;
   }
 
   private buildRegExp(entry: SearchEntry): RegExp {
@@ -356,6 +672,13 @@ class EchoSearchController {
       return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
     }
     return value.toLowerCase();
+  }
+
+  private normalizeCombineMode(mode: unknown): CombineMode {
+    if (mode === "ordered" || mode === "unordered" || mode === "adjacent") {
+      return mode;
+    }
+    return "ordered";
   }
 
   private sanitizeEntry(item: SearchEntry, index: number): SearchEntry {
@@ -396,11 +719,29 @@ class EchoSearchController {
       matchCount: doc ? this.collectRanges(text, doc, entry).length : 0
     }));
 
+    const combined = doc
+      ? this.runCombined(text, doc)
+      : ({
+          ranges: [],
+          list: [],
+          tokens: [],
+          reason: "No active editor."
+        } as CombinedRunResult);
+
     return {
       entries,
       history: this.getSortedHistory(),
       canAdd: this.entries.length < this.maxEntries,
-      maxEntries: this.maxEntries
+      maxEntries: this.maxEntries,
+      combined: {
+        ...this.combinedConfig,
+        count: combined.ranges.length,
+        results: combined.list,
+        debug: {
+          tokens: combined.tokens,
+          reason: combined.reason
+        }
+      }
     };
   }
 
@@ -548,11 +889,13 @@ class EchoSearchController {
     <button id="addBtn" type="button">Add</button>
     <button id="refreshBtn" type="button">Refresh</button>
   </div>
+  <div id="combinedPanel" class="combined-panel"></div>
   <div id="searchList" class="search-list"></div>
   <div class="history-wrap">
     <div class="history-title">History</div>
     <div id="historyList" class="history-list"></div>
   </div>
+  <div id="debugPanel" class="debug-panel"></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
