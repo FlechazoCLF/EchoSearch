@@ -6,6 +6,7 @@ const vscode = require("vscode");
 class EchoSearchController {
     constructor(context) {
         this.context = context;
+        this.maxEntries = 10;
         this.decorationById = new Map();
         this.entries = this.createDefaultEntries();
         this.refreshDecorationsForVisibleEditors();
@@ -13,10 +14,17 @@ class EchoSearchController {
             this.refreshDecorationsForVisibleEditors();
         }), vscode.window.onDidChangeVisibleTextEditors(() => {
             this.refreshDecorationsForVisibleEditors();
+        }), vscode.window.onDidChangeTextEditorSelection(() => {
+            this.postState();
         }), vscode.workspace.onDidChangeTextDocument((event) => {
             const editor = vscode.window.visibleTextEditors.find((item) => item.document.uri.toString() === event.document.uri.toString());
             if (editor) {
                 this.applyDecorations(editor);
+                if (vscode.window.activeTextEditor &&
+                    vscode.window.activeTextEditor.document.uri.toString() ===
+                        editor.document.uri.toString()) {
+                    this.postState();
+                }
             }
         }), vscode.commands.registerCommand("echosearch.clearAll", () => {
             this.clearAllEntries();
@@ -37,10 +45,10 @@ class EchoSearchController {
             else if (msg.type === "clearAll") {
                 this.clearAllEntries();
             }
+            else if (msg.type === "navigate") {
+                this.navigateToMatch(msg.payload.id, msg.payload.direction);
+            }
         });
-    }
-    focusView() {
-        vscode.commands.executeCommand("echosearch.sidebar.focus");
     }
     clearAllEntries() {
         for (const entry of this.entries) {
@@ -51,37 +59,16 @@ class EchoSearchController {
         this.postState();
     }
     onStateChanged(incoming) {
-        const incomingById = new Map(incoming.map((item) => [item.id, item]));
-        for (const entry of this.entries) {
-            const next = incomingById.get(entry.id);
-            if (!next) {
-                continue;
-            }
-            entry.enabled = Boolean(next.enabled);
-            entry.query = String(next.query ?? "");
-            entry.mode = next.mode === "regex" ? "regex" : "plain";
-            entry.caseSensitive = Boolean(next.caseSensitive);
-            entry.wholeWord = Boolean(next.wholeWord);
-            entry.color = this.normalizeColor(next.color);
-        }
+        const sanitized = incoming
+            .slice(0, this.maxEntries)
+            .map((item, index) => this.sanitizeEntry(item, index));
+        this.entries = sanitized;
         this.refreshDecorationsForVisibleEditors();
         this.postState();
     }
     createDefaultEntries() {
-        const palette = [
-            "#ffde59",
-            "#8be9fd",
-            "#ff79c6",
-            "#50fa7b",
-            "#f1fa8c",
-            "#bd93f9",
-            "#ffb86c",
-            "#a4ffff",
-            "#f8f8f2",
-            "#c0f5a9"
-        ];
         const result = [];
-        for (let i = 0; i < 10; i += 1) {
+        for (let i = 0; i < 3; i += 1) {
             result.push({
                 id: `slot-${i + 1}`,
                 enabled: false,
@@ -89,7 +76,7 @@ class EchoSearchController {
                 mode: "plain",
                 caseSensitive: false,
                 wholeWord: false,
-                color: palette[i]
+                color: this.defaultColorAt(i)
             });
         }
         return result;
@@ -99,6 +86,7 @@ class EchoSearchController {
         for (const editor of vscode.window.visibleTextEditors) {
             this.applyDecorations(editor);
         }
+        this.postState();
     }
     rebuildDecorationTypes() {
         for (const oldDecoration of this.decorationById.values()) {
@@ -152,6 +140,45 @@ class EchoSearchController {
         }
         return ranges;
     }
+    navigateToMatch(id, direction) {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            return;
+        }
+        const entry = this.entries.find((item) => item.id === id);
+        if (!entry) {
+            return;
+        }
+        const text = editor.document.getText();
+        const ranges = this.collectRanges(text, editor.document, entry);
+        if (ranges.length === 0) {
+            return;
+        }
+        const cursorOffset = editor.document.offsetAt(editor.selection.active);
+        const starts = ranges.map((range) => editor.document.offsetAt(range.start));
+        let targetIndex = 0;
+        if (direction === "next") {
+            targetIndex = starts.findIndex((offset) => offset > cursorOffset);
+            if (targetIndex < 0) {
+                targetIndex = 0;
+            }
+        }
+        else {
+            targetIndex = -1;
+            for (let i = starts.length - 1; i >= 0; i -= 1) {
+                if (starts[i] < cursorOffset) {
+                    targetIndex = i;
+                    break;
+                }
+            }
+            if (targetIndex < 0) {
+                targetIndex = starts.length - 1;
+            }
+        }
+        const target = ranges[targetIndex];
+        editor.selection = new vscode.Selection(target.start, target.end);
+        editor.revealRange(target, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    }
     buildRegExp(entry) {
         const source = entry.mode === "regex" ? entry.query : this.escapeRegExp(entry.query);
         const wrapped = entry.wholeWord ? `\\b(?:${source})\\b` : source;
@@ -185,13 +212,48 @@ class EchoSearchController {
         }
         return value.toLowerCase();
     }
+    sanitizeEntry(item, index) {
+        return {
+            id: String(item.id || `slot-${index + 1}`),
+            enabled: Boolean(item.enabled),
+            query: String(item.query ?? ""),
+            mode: item.mode === "regex" ? "regex" : "plain",
+            caseSensitive: Boolean(item.caseSensitive),
+            wholeWord: Boolean(item.wholeWord),
+            color: this.normalizeColor(item.color || this.defaultColorAt(index))
+        };
+    }
+    defaultColorAt(index) {
+        const palette = [
+            "#ffde59",
+            "#8be9fd",
+            "#ff79c6",
+            "#50fa7b",
+            "#f1fa8c",
+            "#bd93f9",
+            "#ffb86c",
+            "#a4ffff",
+            "#f8f8f2",
+            "#c0f5a9"
+        ];
+        return palette[index % palette.length];
+    }
+    buildStatePayload() {
+        const activeEditor = vscode.window.activeTextEditor;
+        const text = activeEditor?.document.getText() ?? "";
+        const doc = activeEditor?.document;
+        return this.entries.map((entry) => ({
+            ...entry,
+            matchCount: doc ? this.collectRanges(text, doc, entry).length : 0
+        }));
+    }
     postState() {
         if (!this.view) {
             return;
         }
         const message = {
             type: "state",
-            payload: this.entries
+            payload: this.buildStatePayload()
         };
         this.view.webview.postMessage(message);
     }
@@ -209,7 +271,12 @@ class EchoSearchController {
   <title>EchoSearch</title>
 </head>
 <body>
+  <div class="hero">
+    <h1>EchoSearch</h1>
+    <p>Every focused search is a small step toward a clearer mind.</p>
+  </div>
   <div class="toolbar">
+    <button id="addBtn" type="button">Add Box</button>
     <button id="refreshBtn" type="button">Refresh</button>
     <button id="clearBtn" type="button">Clear</button>
   </div>
@@ -233,7 +300,6 @@ function activate(context) {
     context.subscriptions.push(vscode.commands.registerCommand("echosearch.focus", async () => {
         await vscode.commands.executeCommand("workbench.view.extension.echoSearch");
         await vscode.commands.executeCommand("echosearch.sidebar.focus");
-        controller.focusView();
     }));
 }
 function deactivate() { }

@@ -14,9 +14,25 @@ body {
   background: var(--vscode-editor-background);
 }
 
+.hero {
+  margin-bottom: 10px;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.hero p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
 .toolbar {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 8px;
   margin-bottom: 10px;
 }
@@ -73,6 +89,17 @@ button:hover {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.mini-actions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.mini-actions button {
+  font-size: 11px;
+  padding: 4px 0;
 }
 
 .opts label {

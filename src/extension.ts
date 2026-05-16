@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 type SearchMode = "plain" | "regex";
+type NavDirection = "next" | "prev";
 
 interface SearchEntry {
   id: string;
@@ -12,9 +13,13 @@ interface SearchEntry {
   color: string;
 }
 
+interface SearchEntryView extends SearchEntry {
+  matchCount: number;
+}
+
 interface WebviewUpdateMessage {
   type: "state";
-  payload: SearchEntry[];
+  payload: SearchEntryView[];
 }
 
 interface WebviewStateMessage {
@@ -30,10 +35,23 @@ interface WebviewClearMessage {
   type: "clearAll";
 }
 
-type IncomingMessage = WebviewStateMessage | WebviewRefreshMessage | WebviewClearMessage;
+interface WebviewNavigateMessage {
+  type: "navigate";
+  payload: {
+    id: string;
+    direction: NavDirection;
+  };
+}
+
+type IncomingMessage =
+  | WebviewStateMessage
+  | WebviewRefreshMessage
+  | WebviewClearMessage
+  | WebviewNavigateMessage;
 
 class EchoSearchController {
-  private readonly entries: SearchEntry[];
+  private readonly maxEntries = 10;
+  private entries: SearchEntry[];
   private decorationById = new Map<string, vscode.TextEditorDecorationType>();
   private view: vscode.WebviewView | undefined;
 
@@ -48,12 +66,22 @@ class EchoSearchController {
       vscode.window.onDidChangeVisibleTextEditors(() => {
         this.refreshDecorationsForVisibleEditors();
       }),
+      vscode.window.onDidChangeTextEditorSelection(() => {
+        this.postState();
+      }),
       vscode.workspace.onDidChangeTextDocument((event) => {
         const editor = vscode.window.visibleTextEditors.find(
           (item) => item.document.uri.toString() === event.document.uri.toString()
         );
         if (editor) {
           this.applyDecorations(editor);
+          if (
+            vscode.window.activeTextEditor &&
+            vscode.window.activeTextEditor.document.uri.toString() ===
+              editor.document.uri.toString()
+          ) {
+            this.postState();
+          }
         }
       }),
       vscode.commands.registerCommand("echosearch.clearAll", () => {
@@ -75,12 +103,10 @@ class EchoSearchController {
         this.refreshDecorationsForVisibleEditors();
       } else if (msg.type === "clearAll") {
         this.clearAllEntries();
+      } else if (msg.type === "navigate") {
+        this.navigateToMatch(msg.payload.id, msg.payload.direction);
       }
     });
-  }
-
-  public focusView(): void {
-    vscode.commands.executeCommand("echosearch.sidebar.focus");
   }
 
   private clearAllEntries(): void {
@@ -93,38 +119,17 @@ class EchoSearchController {
   }
 
   private onStateChanged(incoming: SearchEntry[]): void {
-    const incomingById = new Map(incoming.map((item) => [item.id, item]));
-    for (const entry of this.entries) {
-      const next = incomingById.get(entry.id);
-      if (!next) {
-        continue;
-      }
-      entry.enabled = Boolean(next.enabled);
-      entry.query = String(next.query ?? "");
-      entry.mode = next.mode === "regex" ? "regex" : "plain";
-      entry.caseSensitive = Boolean(next.caseSensitive);
-      entry.wholeWord = Boolean(next.wholeWord);
-      entry.color = this.normalizeColor(next.color);
-    }
+    const sanitized = incoming
+      .slice(0, this.maxEntries)
+      .map((item, index) => this.sanitizeEntry(item, index));
+    this.entries = sanitized;
     this.refreshDecorationsForVisibleEditors();
     this.postState();
   }
 
   private createDefaultEntries(): SearchEntry[] {
-    const palette = [
-      "#ffde59",
-      "#8be9fd",
-      "#ff79c6",
-      "#50fa7b",
-      "#f1fa8c",
-      "#bd93f9",
-      "#ffb86c",
-      "#a4ffff",
-      "#f8f8f2",
-      "#c0f5a9"
-    ];
     const result: SearchEntry[] = [];
-    for (let i = 0; i < 10; i += 1) {
+    for (let i = 0; i < 3; i += 1) {
       result.push({
         id: `slot-${i + 1}`,
         enabled: false,
@@ -132,7 +137,7 @@ class EchoSearchController {
         mode: "plain",
         caseSensitive: false,
         wholeWord: false,
-        color: palette[i]
+        color: this.defaultColorAt(i)
       });
     }
     return result;
@@ -143,6 +148,7 @@ class EchoSearchController {
     for (const editor of vscode.window.visibleTextEditors) {
       this.applyDecorations(editor);
     }
+    this.postState();
   }
 
   private rebuildDecorationTypes(): void {
@@ -207,6 +213,48 @@ class EchoSearchController {
     return ranges;
   }
 
+  private navigateToMatch(id: string, direction: NavDirection): void {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      return;
+    }
+    const entry = this.entries.find((item) => item.id === id);
+    if (!entry) {
+      return;
+    }
+    const text = editor.document.getText();
+    const ranges = this.collectRanges(text, editor.document, entry);
+    if (ranges.length === 0) {
+      return;
+    }
+
+    const cursorOffset = editor.document.offsetAt(editor.selection.active);
+    const starts = ranges.map((range) => editor.document.offsetAt(range.start));
+    let targetIndex = 0;
+
+    if (direction === "next") {
+      targetIndex = starts.findIndex((offset) => offset > cursorOffset);
+      if (targetIndex < 0) {
+        targetIndex = 0;
+      }
+    } else {
+      targetIndex = -1;
+      for (let i = starts.length - 1; i >= 0; i -= 1) {
+        if (starts[i] < cursorOffset) {
+          targetIndex = i;
+          break;
+        }
+      }
+      if (targetIndex < 0) {
+        targetIndex = starts.length - 1;
+      }
+    }
+
+    const target = ranges[targetIndex];
+    editor.selection = new vscode.Selection(target.start, target.end);
+    editor.revealRange(target, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  }
+
   private buildRegExp(entry: SearchEntry): RegExp {
     const source = entry.mode === "regex" ? entry.query : this.escapeRegExp(entry.query);
     const wrapped = entry.wholeWord ? `\\b(?:${source})\\b` : source;
@@ -244,13 +292,52 @@ class EchoSearchController {
     return value.toLowerCase();
   }
 
+  private sanitizeEntry(item: SearchEntry, index: number): SearchEntry {
+    return {
+      id: String(item.id || `slot-${index + 1}`),
+      enabled: Boolean(item.enabled),
+      query: String(item.query ?? ""),
+      mode: item.mode === "regex" ? "regex" : "plain",
+      caseSensitive: Boolean(item.caseSensitive),
+      wholeWord: Boolean(item.wholeWord),
+      color: this.normalizeColor(item.color || this.defaultColorAt(index))
+    };
+  }
+
+  private defaultColorAt(index: number): string {
+    const palette = [
+      "#ffde59",
+      "#8be9fd",
+      "#ff79c6",
+      "#50fa7b",
+      "#f1fa8c",
+      "#bd93f9",
+      "#ffb86c",
+      "#a4ffff",
+      "#f8f8f2",
+      "#c0f5a9"
+    ];
+    return palette[index % palette.length];
+  }
+
+  private buildStatePayload(): SearchEntryView[] {
+    const activeEditor = vscode.window.activeTextEditor;
+    const text = activeEditor?.document.getText() ?? "";
+    const doc = activeEditor?.document;
+
+    return this.entries.map((entry) => ({
+      ...entry,
+      matchCount: doc ? this.collectRanges(text, doc, entry).length : 0
+    }));
+  }
+
   private postState(): void {
     if (!this.view) {
       return;
     }
     const message: WebviewUpdateMessage = {
       type: "state",
-      payload: this.entries
+      payload: this.buildStatePayload()
     };
     this.view.webview.postMessage(message);
   }
@@ -274,7 +361,12 @@ class EchoSearchController {
   <title>EchoSearch</title>
 </head>
 <body>
+  <div class="hero">
+    <h1>EchoSearch</h1>
+    <p>Every focused search is a small step toward a clearer mind.</p>
+  </div>
   <div class="toolbar">
+    <button id="addBtn" type="button">Add Box</button>
     <button id="refreshBtn" type="button">Refresh</button>
     <button id="clearBtn" type="button">Clear</button>
   </div>
@@ -306,7 +398,6 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("echosearch.focus", async () => {
       await vscode.commands.executeCommand("workbench.view.extension.echoSearch");
       await vscode.commands.executeCommand("echosearch.sidebar.focus");
-      controller.focusView();
     })
   );
 }
