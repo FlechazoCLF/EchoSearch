@@ -106,7 +106,7 @@ function renderEntries() {
         <input class="query" data-id="${entry.id}" data-key="query" type="text" placeholder="Search..." value="${escapeHtml(
           entry.query
         )}" />
-        <button class="ghost danger" data-id="${entry.id}" data-action="removeOne" type="button" title="Delete">×</button>
+        <button class="ghost danger" data-id="${entry.id}" data-action="removeOne" type="button" title="Delete">x</button>
       </div>
       <div class="opts">
         <button class="ghost icon ${entry.mode === "regex" ? "active" : ""}" data-id="${
@@ -136,16 +136,21 @@ function renderHistory() {
     historyList.appendChild(empty);
     return;
   }
+
   state.history.forEach((item) => {
     const row = document.createElement("div");
     row.className = "history-item";
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "history-btn";
-    btn.dataset.query = item.query;
-    btn.title = item.query;
-    btn.textContent = item.query;
-    row.appendChild(btn);
+    row.innerHTML = `
+      <button type="button" class="history-btn history-use" data-query="${escapeHtmlAttr(
+        item.query
+      )}" title="${escapeHtmlAttr(item.query)}">${escapeHtml(item.query)}</button>
+      <button type="button" class="ghost mini ${item.pinned ? "active" : ""}" data-action="pin" data-query="${escapeHtmlAttr(
+        item.query
+      )}" title="Pin or unpin">Pin</button>
+      <button type="button" class="ghost mini danger" data-action="delete" data-query="${escapeHtmlAttr(
+        item.query
+      )}" title="Delete history">Del</button>
+    `;
     historyList.appendChild(row);
   });
 }
@@ -157,6 +162,10 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function escapeHtmlAttr(value) {
+  return escapeHtml(value).replaceAll("`", "&#096;");
 }
 
 searchList.addEventListener("input", (event) => {
@@ -294,6 +303,25 @@ historyList?.addEventListener("click", (event) => {
   if (!query) {
     return;
   }
+  const action = target.dataset.action || "use";
+
+  if (action === "delete") {
+    state.history = state.history.filter((item) => item.query !== query);
+    renderHistory();
+    vscode.postMessage({ type: "deleteHistory", payload: { query } });
+    return;
+  }
+
+  if (action === "pin") {
+    const item = state.history.find((entry) => entry.query === query);
+    if (item) {
+      item.pinned = !item.pinned;
+    }
+    renderHistory();
+    vscode.postMessage({ type: "togglePinHistory", payload: { query } });
+    return;
+  }
+
   const targetId = activeHistoryTargetId || state.entries[0]?.id;
   if (!targetId) {
     return;

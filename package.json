@@ -1,6 +1,6 @@
 {
   "name": "echo-search",
-  "displayName": "EchoSearch",
+  "displayName": "EchoSearch Pro",
   "description": "Multi-search boxes with custom highlight colors for opened editors.",
   "version": "0.0.1",
   "publisher": "rtt",
@@ -26,7 +26,7 @@
       "activitybar": [
         {
           "id": "echoSearch",
-          "title": "Echo Search",
+          "title": "Echo Search Pro",
           "icon": "media/echo.svg"
         }
       ]
@@ -35,7 +35,7 @@
       "echoSearch": [
         {
           "id": "echosearch.sidebar",
-          "name": "Echo Search",
+          "name": "Echo Search Pro",
           "type": "webview"
         }
       ]

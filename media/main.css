@@ -154,6 +154,12 @@ button:hover {
   overflow: auto;
 }
 
+.history-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 6px;
+}
+
 .history-btn {
   width: 100%;
   text-align: left;
@@ -165,6 +171,13 @@ button:hover {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.mini {
+  min-width: 36px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
 }
 
 .history-empty {

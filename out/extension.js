@@ -54,6 +54,12 @@ class EchoSearchController {
             else if (msg.type === "applyHistory") {
                 this.applyHistoryQuery(msg.payload.id, msg.payload.query);
             }
+            else if (msg.type === "deleteHistory") {
+                this.deleteHistory(msg.payload.query);
+            }
+            else if (msg.type === "togglePinHistory") {
+                this.togglePinHistory(msg.payload.query);
+            }
         });
     }
     onStateChanged(incoming) {
@@ -73,6 +79,21 @@ class EchoSearchController {
         target.enabled = query.trim().length > 0;
         this.captureHistory(query);
         this.refreshDecorationsForVisibleEditors();
+    }
+    deleteHistory(query) {
+        this.history = this.history.filter((item) => item.query !== query);
+        void this.saveHistory();
+        this.postState();
+    }
+    togglePinHistory(query) {
+        const target = this.history.find((item) => item.query === query);
+        if (!target) {
+            return;
+        }
+        target.pinned = !target.pinned;
+        this.sortHistory();
+        void this.saveHistory();
+        this.postState();
     }
     createDefaultEntries() {
         const result = [];
@@ -261,7 +282,7 @@ class EchoSearchController {
         }));
         return {
             entries,
-            history: this.history,
+            history: this.getSortedHistory(),
             canAdd: this.entries.length < this.maxEntries,
             maxEntries: this.maxEntries
         };
@@ -289,17 +310,36 @@ class EchoSearchController {
             return;
         }
         const existing = this.history.findIndex((item) => item.query === query);
+        const wasPinned = existing >= 0 ? this.history[existing].pinned : false;
         if (existing >= 0) {
             this.history.splice(existing, 1);
         }
         this.history.unshift({
             query,
-            usedAt: new Date().toISOString()
+            usedAt: new Date().toISOString(),
+            pinned: wasPinned
         });
         if (this.history.length > this.maxHistory) {
             this.history = this.history.slice(0, this.maxHistory);
         }
+        this.sortHistory();
         void this.saveHistory();
+    }
+    sortHistory() {
+        this.history.sort((a, b) => {
+            if (a.pinned !== b.pinned) {
+                return a.pinned ? -1 : 1;
+            }
+            return b.usedAt.localeCompare(a.usedAt);
+        });
+    }
+    getSortedHistory() {
+        return [...this.history].sort((a, b) => {
+            if (a.pinned !== b.pinned) {
+                return a.pinned ? -1 : 1;
+            }
+            return b.usedAt.localeCompare(a.usedAt);
+        });
     }
     resolveHistoryFilePath() {
         const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -327,16 +367,19 @@ class EchoSearchController {
                 }
                 const query = String(item.query ?? "").trim();
                 const usedAt = String(item.usedAt ?? "");
+                const pinned = Boolean(item.pinned);
                 if (!query) {
                     return undefined;
                 }
                 return {
                     query,
-                    usedAt: usedAt || new Date().toISOString()
+                    usedAt: usedAt || new Date().toISOString(),
+                    pinned
                 };
             })
                 .filter((item) => Boolean(item))
                 .slice(0, this.maxHistory);
+            this.sortHistory();
         }
         catch {
             this.history = [];
@@ -370,7 +413,7 @@ class EchoSearchController {
 </head>
 <body>
   <div class="hero">
-    <h1>EchoSearch</h1>
+    <h1>EchoSearch Pro</h1>
     <p>Every focused search is a small step toward a clearer mind.</p>
   </div>
   <div class="toolbar">
