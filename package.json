@@ -1,0 +1,58 @@
+{
+  "name": "echo-search",
+  "displayName": "EchoSearch",
+  "description": "Multi-search boxes with custom highlight colors for opened editors.",
+  "version": "0.0.1",
+  "publisher": "rtt",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:echosearch.sidebar",
+    "onCommand:echosearch.focus"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "echosearch.focus",
+        "title": "EchoSearch: Focus Sidebar"
+      },
+      {
+        "command": "echosearch.clearAll",
+        "title": "EchoSearch: Clear All Highlights"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "echoSearch",
+          "title": "Echo Search",
+          "icon": "media/echo.svg"
+        }
+      ]
+    },
+    "views": {
+      "echoSearch": [
+        {
+          "id": "echosearch.sidebar",
+          "name": "Echo Search",
+          "type": "webview"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.8",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.4"
+  }
+}
