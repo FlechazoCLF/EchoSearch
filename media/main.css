@@ -32,7 +32,7 @@ body {
 
 .toolbar {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-bottom: 10px;
 }
@@ -48,6 +48,32 @@ button {
 
 button:hover {
   background: var(--vscode-button-hoverBackground);
+}
+
+.ghost {
+  border: 1px solid var(--vscode-panel-border);
+  background: transparent;
+  color: var(--vscode-foreground);
+}
+
+.ghost:hover {
+  background: color-mix(in srgb, var(--vscode-button-background) 50%, transparent);
+}
+
+.ghost.active {
+  border-color: var(--vscode-focusBorder);
+  background: color-mix(in srgb, var(--vscode-focusBorder) 25%, transparent);
+}
+
+.ghost.danger {
+  color: var(--vscode-errorForeground);
+}
+
+.icon {
+  min-width: 26px;
+  height: 24px;
+  padding: 0 6px;
+  font-size: 12px;
 }
 
 .search-list {
@@ -66,14 +92,20 @@ button:hover {
 
 .card-head {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: 1fr auto;
   gap: 8px;
   align-items: center;
   font-size: 12px;
 }
 
 .label {
-  opacity: 0.8;
+  opacity: 0.85;
+}
+
+.query-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
 }
 
 .query {
@@ -88,37 +120,11 @@ button:hover {
 .opts {
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
-}
-
-.mini-actions {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
-}
-
-.mini-actions button {
-  font-size: 11px;
-  padding: 4px 0;
-}
-
-.opts label {
-  display: inline-flex;
   align-items: center;
-  gap: 3px;
-  font-size: 11px;
-  border: 1px solid var(--vscode-panel-border);
-  border-radius: 999px;
-  padding: 2px 7px;
 }
 
-.mode {
-  border: 1px solid var(--vscode-dropdown-border);
-  background: var(--vscode-dropdown-background);
-  color: var(--vscode-dropdown-foreground);
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-size: 11px;
+.spacer {
+  flex: 1;
 }
 
 .color {
@@ -127,4 +133,41 @@ button:hover {
   border: 1px solid var(--vscode-input-border);
   background: transparent;
   padding: 0;
+}
+
+.history-wrap {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.history-title {
+  font-size: 12px;
+  opacity: 0.8;
+  margin-bottom: 6px;
+}
+
+.history-list {
+  display: grid;
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.history-btn {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--vscode-panel-border);
+  color: var(--vscode-foreground);
+  border-radius: 6px;
+  padding: 5px 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-empty {
+  font-size: 11px;
+  opacity: 0.6;
 }

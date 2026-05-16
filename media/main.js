@@ -2,15 +2,65 @@ const vscode = acquireVsCodeApi();
 
 const searchList = document.getElementById("searchList");
 const refreshBtn = document.getElementById("refreshBtn");
-const clearBtn = document.getElementById("clearBtn");
 const addBtn = document.getElementById("addBtn");
+const historyList = document.getElementById("historyList");
 
-let state = [];
+let state = {
+  entries: [],
+  history: [],
+  canAdd: true,
+  maxEntries: 10
+};
 let debounceTimer = null;
-const MAX_SEARCH_BOXES = 10;
+let activeHistoryTargetId = null;
+
+function captureQueryFocus() {
+  const el = document.activeElement;
+  if (!(el instanceof HTMLInputElement)) {
+    return null;
+  }
+  if (!el.classList.contains("query")) {
+    return null;
+  }
+  const id = el.dataset.id;
+  if (!id) {
+    return null;
+  }
+  return {
+    id,
+    start: el.selectionStart ?? 0,
+    end: el.selectionEnd ?? 0
+  };
+}
+
+function restoreQueryFocus(snapshot) {
+  if (!snapshot) {
+    return;
+  }
+  const selector = `.query[data-id="${snapshot.id}"]`;
+  const el = searchList.querySelector(selector);
+  if (!(el instanceof HTMLInputElement)) {
+    return;
+  }
+  el.focus();
+  try {
+    el.setSelectionRange(snapshot.start, snapshot.end);
+  } catch {
+    // Ignore selection restore failures.
+  }
+}
 
 function postState() {
-  vscode.postMessage({ type: "updateState", payload: state });
+  const payload = state.entries.map((entry) => ({
+    id: entry.id,
+    enabled: entry.enabled,
+    query: entry.query,
+    mode: entry.mode,
+    caseSensitive: entry.caseSensitive,
+    wholeWord: entry.wholeWord,
+    color: entry.color
+  }));
+  vscode.postMessage({ type: "updateState", payload });
 }
 
 function debouncePost() {
@@ -20,48 +70,84 @@ function debouncePost() {
   debounceTimer = setTimeout(postState, 120);
 }
 
-function render() {
+function setEntry(id, patch) {
+  const idx = state.entries.findIndex((item) => item.id === id);
+  if (idx < 0) {
+    return null;
+  }
+  const next = { ...state.entries[idx], ...patch };
+  state.entries[idx] = next;
+  return next;
+}
+
+function renderAll() {
+  const focus = captureQueryFocus();
+  renderEntries();
+  renderHistory();
+  restoreQueryFocus(focus);
+  if (addBtn) {
+    addBtn.disabled = !state.canAdd;
+    addBtn.title = state.canAdd ? "" : `Max ${state.maxEntries} search boxes`;
+  }
+}
+
+function renderEntries() {
   searchList.innerHTML = "";
-  state.forEach((entry, index) => {
+  state.entries.forEach((entry, index) => {
     const card = document.createElement("div");
     card.className = "card";
+    card.dataset.id = entry.id;
     card.innerHTML = `
       <div class="card-head">
-        <label>
-          <input data-id="${entry.id}" data-key="enabled" type="checkbox" ${entry.enabled ? "checked" : ""} />
-        </label>
-        <div class="label">Search ${index + 1} · ${entry.matchCount || 0} matches</div>
+        <div class="label">Search ${index + 1} · ${entry.matchCount || 0}</div>
         <input class="color" data-id="${entry.id}" data-key="color" type="color" value="${entry.color}" />
       </div>
-      <input class="query" data-id="${entry.id}" data-key="query" type="text" placeholder="Enter keyword or regex..." value="${escapeHtml(
-        entry.query
-      )}" />
-      <div class="mini-actions">
-        <button data-id="${entry.id}" data-action="clearOne" type="button">Clear</button>
-        <button data-id="${entry.id}" data-action="removeOne" type="button">Delete</button>
-        <button data-id="${entry.id}" data-action="prev" type="button">Prev</button>
-        <button data-id="${entry.id}" data-action="next" type="button">Next</button>
+      <div class="query-row">
+        <input class="query" data-id="${entry.id}" data-key="query" type="text" placeholder="Search..." value="${escapeHtml(
+          entry.query
+        )}" />
+        <button class="ghost danger" data-id="${entry.id}" data-action="removeOne" type="button" title="Delete">×</button>
       </div>
       <div class="opts">
-        <select class="mode" data-id="${entry.id}" data-key="mode">
-          <option value="plain" ${entry.mode === "plain" ? "selected" : ""}>Plain</option>
-          <option value="regex" ${entry.mode === "regex" ? "selected" : ""}>Regex</option>
-        </select>
-        <label>
-          <input data-id="${entry.id}" data-key="caseSensitive" type="checkbox" ${entry.caseSensitive ? "checked" : ""} />
-          Case
-        </label>
-        <label>
-          <input data-id="${entry.id}" data-key="wholeWord" type="checkbox" ${entry.wholeWord ? "checked" : ""} />
-          Word
-        </label>
+        <button class="ghost icon ${entry.mode === "regex" ? "active" : ""}" data-id="${
+          entry.id
+        }" data-action="toggleRegex" type="button" title="Use Regular Expression">.*</button>
+        <button class="ghost icon ${entry.caseSensitive ? "active" : ""}" data-id="${
+          entry.id
+        }" data-action="toggleCase" type="button" title="Match Case">Aa</button>
+        <button class="ghost icon ${entry.wholeWord ? "active" : ""}" data-id="${
+          entry.id
+        }" data-action="toggleWord" type="button" title="Match Whole Word">ab</button>
+        <span class="spacer"></span>
+        <button class="ghost icon" data-id="${entry.id}" data-action="prev" type="button" title="Previous Match">&#8593;</button>
+        <button class="ghost icon" data-id="${entry.id}" data-action="next" type="button" title="Next Match">&#8595;</button>
       </div>
     `;
     searchList.appendChild(card);
   });
-  if (addBtn) {
-    addBtn.disabled = state.length >= MAX_SEARCH_BOXES;
+}
+
+function renderHistory() {
+  historyList.innerHTML = "";
+  if (!Array.isArray(state.history) || state.history.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "history-empty";
+    empty.textContent = "No history yet";
+    historyList.appendChild(empty);
+    return;
   }
+  state.history.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "history-item";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "history-btn";
+    btn.dataset.query = item.query;
+    btn.title = item.query;
+    btn.textContent = item.query;
+    row.appendChild(btn);
+    historyList.appendChild(row);
+  });
 }
 
 function escapeHtml(value) {
@@ -73,22 +159,9 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-function updateEntry(id, key, value) {
-  const idx = state.findIndex((item) => item.id === id);
-  if (idx < 0) {
-    return;
-  }
-  const next = { ...state[idx], [key]: value };
-  if (key === "query") {
-    next.enabled = String(value).trim().length > 0;
-  }
-  state[idx] = next;
-  debouncePost();
-}
-
 searchList.addEventListener("input", (event) => {
   const target = event.target;
-  if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) {
+  if (!(target instanceof HTMLInputElement)) {
     return;
   }
   const id = target.dataset.id;
@@ -96,28 +169,23 @@ searchList.addEventListener("input", (event) => {
   if (!id || !key) {
     return;
   }
-  if (target instanceof HTMLInputElement && target.type === "checkbox") {
-    updateEntry(id, key, target.checked);
+  if (key === "query") {
+    const value = target.value;
+    const next = setEntry(id, {
+      query: value,
+      enabled: value.trim().length > 0
+    });
+    if (next) {
+      debouncePost();
+    }
     return;
   }
-  updateEntry(id, key, target.value);
-});
-
-searchList.addEventListener("change", (event) => {
-  const target = event.target;
-  if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) {
-    return;
+  if (key === "color") {
+    const next = setEntry(id, { color: target.value });
+    if (next) {
+      debouncePost();
+    }
   }
-  const id = target.dataset.id;
-  const key = target.dataset.key;
-  if (!id || !key) {
-    return;
-  }
-  if (target instanceof HTMLInputElement && target.type === "checkbox") {
-    updateEntry(id, key, target.checked);
-    return;
-  }
-  updateEntry(id, key, target.value);
 });
 
 searchList.addEventListener("click", (event) => {
@@ -130,20 +198,35 @@ searchList.addEventListener("click", (event) => {
   if (!id || !action) {
     return;
   }
-  const idx = state.findIndex((item) => item.id === id);
+  const idx = state.entries.findIndex((item) => item.id === id);
   if (idx < 0) {
     return;
   }
 
-  if (action === "clearOne") {
-    state[idx] = { ...state[idx], query: "", enabled: false };
-    render();
+  if (action === "removeOne") {
+    state.entries.splice(idx, 1);
+    renderEntries();
     postState();
     return;
   }
-  if (action === "removeOne") {
-    state.splice(idx, 1);
-    render();
+  if (action === "toggleRegex") {
+    const entry = state.entries[idx];
+    setEntry(id, { mode: entry.mode === "regex" ? "plain" : "regex" });
+    renderEntries();
+    postState();
+    return;
+  }
+  if (action === "toggleCase") {
+    const entry = state.entries[idx];
+    setEntry(id, { caseSensitive: !entry.caseSensitive });
+    renderEntries();
+    postState();
+    return;
+  }
+  if (action === "toggleWord") {
+    const entry = state.entries[idx];
+    setEntry(id, { wholeWord: !entry.wholeWord });
+    renderEntries();
     postState();
     return;
   }
@@ -155,51 +238,82 @@ searchList.addEventListener("click", (event) => {
   }
 });
 
-refreshBtn.addEventListener("click", () => {
+searchList.addEventListener("focusin", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+  const id = target.dataset.id;
+  const key = target.dataset.key;
+  if (key === "query" && id) {
+    activeHistoryTargetId = id;
+  }
+});
+
+refreshBtn?.addEventListener("click", () => {
   vscode.postMessage({ type: "refresh" });
 });
 
-clearBtn.addEventListener("click", () => {
-  vscode.postMessage({ type: "clearAll" });
+addBtn?.addEventListener("click", () => {
+  if (!state.canAdd) {
+    return;
+  }
+  const id = `slot-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  const palette = [
+    "#ffde59",
+    "#8be9fd",
+    "#ff79c6",
+    "#50fa7b",
+    "#f1fa8c",
+    "#bd93f9",
+    "#ffb86c",
+    "#a4ffff",
+    "#f8f8f2",
+    "#c0f5a9"
+  ];
+  state.entries.push({
+    id,
+    enabled: false,
+    query: "",
+    mode: "plain",
+    caseSensitive: false,
+    wholeWord: false,
+    color: palette[state.entries.length % palette.length],
+    matchCount: 0
+  });
+  renderEntries();
+  postState();
 });
 
-if (addBtn) {
-  addBtn.addEventListener("click", () => {
-    if (state.length >= MAX_SEARCH_BOXES) {
-      return;
-    }
-    const id = `slot-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-    const palette = [
-      "#ffde59",
-      "#8be9fd",
-      "#ff79c6",
-      "#50fa7b",
-      "#f1fa8c",
-      "#bd93f9",
-      "#ffb86c",
-      "#a4ffff",
-      "#f8f8f2",
-      "#c0f5a9"
-    ];
-    state.push({
-      id,
-      enabled: false,
-      query: "",
-      mode: "plain",
-      caseSensitive: false,
-      wholeWord: false,
-      color: palette[state.length % palette.length],
-      matchCount: 0
-    });
-    render();
-    postState();
+historyList?.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) {
+    return;
+  }
+  const query = target.dataset.query;
+  if (!query) {
+    return;
+  }
+  const targetId = activeHistoryTargetId || state.entries[0]?.id;
+  if (!targetId) {
+    return;
+  }
+  const next = setEntry(targetId, { query, enabled: query.trim().length > 0 });
+  if (!next) {
+    return;
+  }
+  renderEntries();
+  postState();
+  vscode.postMessage({
+    type: "applyHistory",
+    payload: { id: targetId, query }
   });
-}
+});
 
 window.addEventListener("message", (event) => {
   const msg = event.data;
-  if (msg?.type === "state" && Array.isArray(msg.payload)) {
+  if (msg?.type === "state" && msg.payload) {
     state = msg.payload;
-    render();
+    renderAll();
   }
 });

@@ -2,14 +2,17 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
+const fs = require("node:fs/promises");
+const path = require("node:path");
 const vscode = require("vscode");
 class EchoSearchController {
     constructor(context) {
         this.context = context;
         this.maxEntries = 10;
+        this.maxHistory = 80;
+        this.history = [];
         this.decorationById = new Map();
         this.entries = this.createDefaultEntries();
-        this.refreshDecorationsForVisibleEditors();
         this.context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(() => {
             this.refreshDecorationsForVisibleEditors();
         }), vscode.window.onDidChangeVisibleTextEditors(() => {
@@ -18,17 +21,20 @@ class EchoSearchController {
             this.postState();
         }), vscode.workspace.onDidChangeTextDocument((event) => {
             const editor = vscode.window.visibleTextEditors.find((item) => item.document.uri.toString() === event.document.uri.toString());
-            if (editor) {
-                this.applyDecorations(editor);
-                if (vscode.window.activeTextEditor &&
-                    vscode.window.activeTextEditor.document.uri.toString() ===
-                        editor.document.uri.toString()) {
-                    this.postState();
-                }
+            if (!editor) {
+                return;
             }
-        }), vscode.commands.registerCommand("echosearch.clearAll", () => {
-            this.clearAllEntries();
+            this.applyDecorations(editor);
+            if (vscode.window.activeTextEditor &&
+                vscode.window.activeTextEditor.document.uri.toString() === editor.document.uri.toString()) {
+                this.postState();
+            }
         }));
+    }
+    async initialize() {
+        this.historyFilePath = this.resolveHistoryFilePath();
+        await this.loadHistory();
+        this.refreshDecorationsForVisibleEditors();
     }
     bindView(view) {
         this.view = view;
@@ -42,29 +48,31 @@ class EchoSearchController {
             else if (msg.type === "refresh") {
                 this.refreshDecorationsForVisibleEditors();
             }
-            else if (msg.type === "clearAll") {
-                this.clearAllEntries();
-            }
             else if (msg.type === "navigate") {
                 this.navigateToMatch(msg.payload.id, msg.payload.direction);
             }
+            else if (msg.type === "applyHistory") {
+                this.applyHistoryQuery(msg.payload.id, msg.payload.query);
+            }
         });
-    }
-    clearAllEntries() {
-        for (const entry of this.entries) {
-            entry.query = "";
-            entry.enabled = false;
-        }
-        this.refreshDecorationsForVisibleEditors();
-        this.postState();
     }
     onStateChanged(incoming) {
         const sanitized = incoming
             .slice(0, this.maxEntries)
             .map((item, index) => this.sanitizeEntry(item, index));
         this.entries = sanitized;
+        this.captureHistoryFromEntries();
         this.refreshDecorationsForVisibleEditors();
-        this.postState();
+    }
+    applyHistoryQuery(id, query) {
+        const target = this.entries.find((entry) => entry.id === id);
+        if (!target) {
+            return;
+        }
+        target.query = query;
+        target.enabled = query.trim().length > 0;
+        this.captureHistory(query);
+        this.refreshDecorationsForVisibleEditors();
     }
     createDefaultEntries() {
         const result = [];
@@ -154,19 +162,22 @@ class EchoSearchController {
         if (ranges.length === 0) {
             return;
         }
-        const cursorOffset = editor.document.offsetAt(editor.selection.active);
+        const selectionStart = editor.document.offsetAt(editor.selection.start);
+        const selectionEnd = editor.document.offsetAt(editor.selection.end);
         const starts = ranges.map((range) => editor.document.offsetAt(range.start));
         let targetIndex = 0;
         if (direction === "next") {
-            targetIndex = starts.findIndex((offset) => offset > cursorOffset);
+            const pivot = selectionEnd;
+            targetIndex = starts.findIndex((offset) => offset >= pivot);
             if (targetIndex < 0) {
                 targetIndex = 0;
             }
         }
         else {
+            const pivot = selectionStart;
             targetIndex = -1;
             for (let i = starts.length - 1; i >= 0; i -= 1) {
-                if (starts[i] < cursorOffset) {
+                if (starts[i] < pivot) {
                     targetIndex = i;
                     break;
                 }
@@ -178,6 +189,8 @@ class EchoSearchController {
         const target = ranges[targetIndex];
         editor.selection = new vscode.Selection(target.start, target.end);
         editor.revealRange(target, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+        this.captureHistory(entry.query);
+        this.postState();
     }
     buildRegExp(entry) {
         const source = entry.mode === "regex" ? entry.query : this.escapeRegExp(entry.query);
@@ -242,10 +255,16 @@ class EchoSearchController {
         const activeEditor = vscode.window.activeTextEditor;
         const text = activeEditor?.document.getText() ?? "";
         const doc = activeEditor?.document;
-        return this.entries.map((entry) => ({
+        const entries = this.entries.map((entry) => ({
             ...entry,
             matchCount: doc ? this.collectRanges(text, doc, entry).length : 0
         }));
+        return {
+            entries,
+            history: this.history,
+            canAdd: this.entries.length < this.maxEntries,
+            maxEntries: this.maxEntries
+        };
     }
     postState() {
         if (!this.view) {
@@ -256,6 +275,85 @@ class EchoSearchController {
             payload: this.buildStatePayload()
         };
         this.view.webview.postMessage(message);
+    }
+    captureHistoryFromEntries() {
+        for (const entry of this.entries) {
+            if (entry.enabled && entry.query.trim().length > 0) {
+                this.captureHistory(entry.query);
+            }
+        }
+    }
+    captureHistory(rawQuery) {
+        const query = rawQuery.trim();
+        if (!query) {
+            return;
+        }
+        const existing = this.history.findIndex((item) => item.query === query);
+        if (existing >= 0) {
+            this.history.splice(existing, 1);
+        }
+        this.history.unshift({
+            query,
+            usedAt: new Date().toISOString()
+        });
+        if (this.history.length > this.maxHistory) {
+            this.history = this.history.slice(0, this.maxHistory);
+        }
+        void this.saveHistory();
+    }
+    resolveHistoryFilePath() {
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!root) {
+            return undefined;
+        }
+        return path.join(root, ".echosearch", "history.json");
+    }
+    async loadHistory() {
+        if (!this.historyFilePath) {
+            this.history = [];
+            return;
+        }
+        try {
+            const raw = await fs.readFile(this.historyFilePath, "utf8");
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) {
+                this.history = [];
+                return;
+            }
+            this.history = parsed
+                .map((item) => {
+                if (!item || typeof item !== "object") {
+                    return undefined;
+                }
+                const query = String(item.query ?? "").trim();
+                const usedAt = String(item.usedAt ?? "");
+                if (!query) {
+                    return undefined;
+                }
+                return {
+                    query,
+                    usedAt: usedAt || new Date().toISOString()
+                };
+            })
+                .filter((item) => Boolean(item))
+                .slice(0, this.maxHistory);
+        }
+        catch {
+            this.history = [];
+        }
+    }
+    async saveHistory() {
+        if (!this.historyFilePath) {
+            return;
+        }
+        try {
+            const dir = path.dirname(this.historyFilePath);
+            await fs.mkdir(dir, { recursive: true });
+            await fs.writeFile(this.historyFilePath, JSON.stringify(this.history, null, 2), "utf8");
+        }
+        catch {
+            // Ignore persistence errors to keep UI responsive.
+        }
     }
     getWebviewHtml(webview) {
         const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "main.css"));
@@ -276,11 +374,14 @@ class EchoSearchController {
     <p>Every focused search is a small step toward a clearer mind.</p>
   </div>
   <div class="toolbar">
-    <button id="addBtn" type="button">Add Box</button>
+    <button id="addBtn" type="button">Add</button>
     <button id="refreshBtn" type="button">Refresh</button>
-    <button id="clearBtn" type="button">Clear</button>
   </div>
   <div id="searchList" class="search-list"></div>
+  <div class="history-wrap">
+    <div class="history-title">History</div>
+    <div id="historyList" class="history-list"></div>
+  </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
@@ -296,6 +397,7 @@ class EchoSearchViewProvider {
 }
 function activate(context) {
     const controller = new EchoSearchController(context);
+    void controller.initialize();
     context.subscriptions.push(vscode.window.registerWebviewViewProvider("echosearch.sidebar", new EchoSearchViewProvider(controller)));
     context.subscriptions.push(vscode.commands.registerCommand("echosearch.focus", async () => {
         await vscode.commands.executeCommand("workbench.view.extension.echoSearch");

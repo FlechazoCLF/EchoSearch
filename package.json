@@ -20,10 +20,6 @@
       {
         "command": "echosearch.focus",
         "title": "EchoSearch: Focus Sidebar"
-      },
-      {
-        "command": "echosearch.clearAll",
-        "title": "EchoSearch: Clear All Highlights"
       }
     ],
     "viewsContainers": {
