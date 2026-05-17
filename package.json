@@ -2,14 +2,24 @@
   "name": "echo-search",
   "displayName": "EchoSearch Pro",
   "description": "Multi-search boxes with custom highlight colors for opened editors.",
-  "version": "0.0.1",
-  "publisher": "rtt",
+  "version": "0.0.2",
+  "publisher": "flechazo",
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
     "Other"
   ],
+  "keywords": [
+    "search",
+    "log",
+    "regex",
+    "highlight",
+    "autosar",
+    "uds",
+    "can"
+  ],
+  "icon": "media/echo.png",
   "activationEvents": [
     "onView:echosearch.sidebar",
     "onCommand:echosearch.focus"
@@ -50,5 +60,13 @@
     "@types/node": "^20.14.8",
     "@types/vscode": "^1.90.0",
     "typescript": "^5.5.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FlechazoCLF/EchoSearch"
+  },
+  "homepage": "https://github.com/FlechazoCLF/EchoSearch",
+  "bugs": {
+    "url": "https://github.com/FlechazoCLF/EchoSearch/issues"
   }
 }
