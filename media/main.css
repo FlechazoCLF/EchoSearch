@@ -30,6 +30,55 @@ body {
   opacity: 0.8;
 }
 
+.hero-links {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+}
+
+.icon-link {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--vscode-panel-border);
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-link img {
+  width: 14px;
+  height: 14px;
+  display: block;
+  filter: grayscale(100%) brightness(1.2);
+}
+
+.icon-link:hover {
+  color: var(--vscode-foreground);
+  background: color-mix(in srgb, var(--vscode-button-background) 28%, transparent);
+  border-color: var(--vscode-focusBorder);
+}
+
+.icon-link:hover img {
+  filter: none;
+}
+
+.icon-link:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.hero-links button {
+  cursor: pointer;
+}
+
+.hero-links button:active {
+  transform: translateY(0.5px);
+}
+
 .toolbar {
   display: grid;
   grid-template-columns: 1fr 1fr;

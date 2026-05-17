@@ -1,4 +1,4 @@
-const vscode = acquireVsCodeApi();
+﻿const vscode = acquireVsCodeApi();
 
 const searchList = document.getElementById("searchList");
 const refreshBtn = document.getElementById("refreshBtn");
@@ -6,6 +6,8 @@ const addBtn = document.getElementById("addBtn");
 const historyList = document.getElementById("historyList");
 const combinedPanel = document.getElementById("combinedPanel");
 const debugPanel = document.getElementById("debugPanel");
+const openWebsiteBtn = document.getElementById("openWebsiteBtn");
+const openGithubBtn = document.getElementById("openGithubBtn");
 
 let state = {
   entries: [],
@@ -476,3 +478,12 @@ window.addEventListener("message", (event) => {
     renderAll();
   }
 });
+
+openWebsiteBtn?.addEventListener("click", () => {
+  vscode.postMessage({ type: "openLink", payload: { target: "website" } });
+});
+
+openGithubBtn?.addEventListener("click", () => {
+  vscode.postMessage({ type: "openLink", payload: { target: "github" } });
+});
+

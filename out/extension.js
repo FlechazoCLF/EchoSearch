@@ -81,7 +81,16 @@ class EchoSearchController {
             else if (msg.type === "navigateCombined") {
                 this.navigateCombined(msg.payload.direction);
             }
+            else if (msg.type === "openLink") {
+                void this.openExternalLink(msg.payload.target);
+            }
         });
+    }
+    async openExternalLink(target) {
+        const url = target === "github"
+            ? "https://github.com/FlechazoCLF/EchoSearch"
+            : "https://flechazo.mba";
+        await vscode.env.openExternal(vscode.Uri.parse(url));
     }
     onStateChanged(incoming) {
         const sanitized = incoming
@@ -237,11 +246,14 @@ class EchoSearchController {
     navigateByRanges(editor, ranges, direction) {
         const selectionStart = editor.document.offsetAt(editor.selection.start);
         const selectionEnd = editor.document.offsetAt(editor.selection.end);
-        const starts = ranges.map((range) => editor.document.offsetAt(range.start));
+        const points = ranges.map((range) => ({
+            start: editor.document.offsetAt(range.start),
+            end: editor.document.offsetAt(range.end)
+        }));
         let targetIndex = 0;
         if (direction === "next") {
             const pivot = selectionEnd;
-            targetIndex = starts.findIndex((offset) => offset >= pivot);
+            targetIndex = points.findIndex((point) => point.start > pivot);
             if (targetIndex < 0) {
                 targetIndex = 0;
             }
@@ -249,14 +261,14 @@ class EchoSearchController {
         else {
             const pivot = selectionStart;
             targetIndex = -1;
-            for (let i = starts.length - 1; i >= 0; i -= 1) {
-                if (starts[i] < pivot) {
+            for (let i = points.length - 1; i >= 0; i -= 1) {
+                if (points[i].end < pivot) {
                     targetIndex = i;
                     break;
                 }
             }
             if (targetIndex < 0) {
-                targetIndex = starts.length - 1;
+                targetIndex = points.length - 1;
             }
         }
         const target = ranges[targetIndex];
@@ -282,8 +294,8 @@ class EchoSearchController {
             };
         }
         const rawWindows = this.combinedConfig.mode === "unordered"
-            ? this.findUnorderedWindows(text, tokens)
-            : this.findOrderedWindows(text, tokens, this.combinedConfig.mode === "adjacent" ? this.combinedConfig.maxGap : undefined);
+            ? this.findUnorderedWindows(text, tokens, this.combinedConfig.maxGap)
+            : this.findOrderedWindows(text, tokens, this.combinedConfig.maxGap, this.combinedConfig.mode === "adjacent");
         const merged = this.mergeTokenWindows(rawWindows);
         const ranges = merged.map((item) => new vscode.Range(document.positionAt(item.start), document.positionAt(item.end)));
         const list = merged.slice(0, this.maxCombinedList).map((item) => {
@@ -303,13 +315,13 @@ class EchoSearchController {
             tokens: tokens.map((item) => item.query.trim()),
             reason: ranges.length > 0
                 ? `Matched ${ranges.length} combined result(s).`
-                : `No match with mode=${this.combinedConfig.mode}${this.combinedConfig.mode === "adjacent" ? ` gap=${this.combinedConfig.maxGap}` : ""}.`
+                : `No match with mode=${this.combinedConfig.mode} gap=${this.combinedConfig.maxGap}.`
         };
     }
     extractCombinedTokens() {
         return this.entries.filter((entry) => entry.enabled && entry.query.trim().length > 0);
     }
-    findOrderedWindows(text, tokens, maxGap) {
+    findOrderedWindows(text, tokens, maxGap, strictAdjacent) {
         const perTokenMatches = tokens.map((token) => this.collectTokenMatches(text, token));
         if (perTokenMatches.some((list) => list.length === 0)) {
             return [];
@@ -319,15 +331,16 @@ class EchoSearchController {
         for (const seed of first) {
             let current = seed;
             let failed = false;
+            let totalLen = seed.end - seed.start;
             for (let i = 1; i < perTokenMatches.length; i += 1) {
                 const candidates = perTokenMatches[i];
                 const next = candidates.find((candidate) => {
                     if (candidate.start < current.end) {
                         return false;
                     }
-                    if (typeof maxGap === "number") {
-                        const gap = candidate.start - current.end;
-                        return gap <= maxGap;
+                    if (strictAdjacent) {
+                        const adjacentGap = candidate.start - current.end;
+                        return adjacentGap <= maxGap;
                     }
                     return true;
                 });
@@ -335,15 +348,22 @@ class EchoSearchController {
                     failed = true;
                     break;
                 }
+                totalLen += next.end - next.start;
                 current = next;
             }
             if (!failed) {
+                const totalSpan = current.end - seed.start;
+                const gapBudget = Math.max(0, (tokens.length - 1) * maxGap);
+                const actualGap = Math.max(0, totalSpan - totalLen);
+                if (actualGap > gapBudget) {
+                    continue;
+                }
                 results.push({ start: seed.start, end: current.end });
             }
         }
         return results;
     }
-    findUnorderedWindows(text, tokens) {
+    findUnorderedWindows(text, tokens, maxGap) {
         const events = [];
         tokens.forEach((token, tokenIndex) => {
             const tokenMatches = this.collectTokenMatches(text, token);
@@ -374,10 +394,14 @@ class EchoSearchController {
             while (haveKinds === needKinds && left <= right) {
                 const first = events[left];
                 const last = events[right];
-                windows.push({
-                    start: first.start,
-                    end: last.end
-                });
+                const maxSpan = Math.max(0, (needKinds - 1) * maxGap) + needKinds;
+                const span = last.end - first.start;
+                if (span <= maxSpan) {
+                    windows.push({
+                        start: first.start,
+                        end: last.end
+                    });
+                }
                 const removeKind = first.tokenIndex;
                 const removePrev = countByKind.get(removeKind) ?? 0;
                 if (removePrev <= 1) {
@@ -650,13 +674,15 @@ class EchoSearchController {
     getWebviewHtml(webview) {
         const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "main.css"));
         const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "main.js"));
+        const websiteIconUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "icon-website.svg"));
+        const githubIconUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "icon-github.svg"));
         const nonce = Date.now().toString(36);
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';" />
   <link rel="stylesheet" href="${styleUri}" />
   <title>EchoSearch</title>
 </head>
@@ -664,6 +690,14 @@ class EchoSearchController {
   <div class="hero">
     <h1>EchoSearch Pro</h1>
     <p>Every focused search is a small step toward a clearer mind.</p>
+    <div class="hero-links">
+      <button id="openWebsiteBtn" class="icon-link" type="button" title="Open Website" aria-label="Open Website">
+        <img src="${websiteIconUri}" alt="" />
+      </button>
+      <button id="openGithubBtn" class="icon-link" type="button" title="Open GitHub" aria-label="Open GitHub">
+        <img src="${githubIconUri}" alt="" />
+      </button>
+    </div>
   </div>
   <div class="toolbar">
     <button id="addBtn" type="button">Add</button>
